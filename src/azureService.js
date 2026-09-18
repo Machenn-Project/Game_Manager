@@ -2,7 +2,13 @@ const { BlobServiceClient } = require("@azure/storage-blob");
 
 const CONNECTION_STRING = process.env.AZURE_STORAGE_CONNECTION_STRING;
 const CONTAINER_NAME = process.env.AZURE_CONTAINER_NAME || "games";
-const CDN_HOSTNAME = (process.env.CDN_HOSTNAME || "").trim();
+// Accept a bare hostname as documented, but also tolerate someone pasting a full
+// URL (protocol and/or trailing slash) so a misconfigured .env can't produce a
+// broken "https://https://..." link.
+const CDN_HOSTNAME = (process.env.CDN_HOSTNAME || "")
+  .trim()
+  .replace(/^https?:\/\//i, "")
+  .replace(/\/+$/, "");
 
 if (!CONNECTION_STRING) {
   console.warn(
@@ -235,7 +241,14 @@ async function getGameManifest(game) {
 // Returns the manifest plus a derived (never persisted) currentFiles list — the
 // stable, permanent links for the current build. Use this for API responses.
 function withCurrentFiles(game, manifest) {
-  return { ...manifest, currentFiles: getCurrentFiles(game, manifest) };
+  // Recompute every URL from the live CDN_HOSTNAME instead of trusting whatever was
+  // stored at upload time, so a corrected .env (or a future hostname change) takes
+  // effect immediately without needing to touch old manifest data.
+  const versions = (manifest.versions || []).map((v) => ({
+    ...v,
+    files: (v.files || []).map((f) => ({ ...f, url: buildPublicUrl(filePath(game, v.id, f.filename)) })),
+  }));
+  return { ...manifest, versions, currentFiles: getCurrentFiles(game, manifest) };
 }
 
 async function createGame(game) {

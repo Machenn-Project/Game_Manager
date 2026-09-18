@@ -1,0 +1,17 @@
+{
+  "name": "game-cdn-manager",
+  "version": "1.0.0",
+  "description": "Azure Storage backed game build/version manager with a web UI, CDN links, and patch updates",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "@azure/storage-blob": "^12.24.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "multer": "^2.0.0"
+  }
+}

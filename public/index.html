@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Build Bay — game version &amp; CDN manager</title>
+<title>Tomoro — Game Manager</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
 <link rel="stylesheet" href="style.css" />
@@ -13,7 +13,7 @@
     <aside class="sidebar">
       <div class="brand">
         <span class="brand-mark">▣</span>
-        <span class="brand-name">Build Bay</span>
+        <span class="brand-name">Tomoro</span>
       </div>
 
       <form id="new-game-form" class="new-game">
@@ -22,6 +22,8 @@
       </form>
 
       <nav id="game-list" class="game-list"></nav>
+
+      <button id="lock-btn" class="ghost sidebar-footer-btn" type="button" hidden>Lock</button>
     </aside>
 
     <main class="main">
@@ -30,7 +32,11 @@
           <h1 id="game-title">Select a game</h1>
           <p id="game-sub" class="muted">Its builds, patches and CDN links live here.</p>
         </div>
-        <button id="delete-game-btn" class="danger ghost" hidden>Delete game</button>
+        <div class="header-actions">
+          <button id="copy-current-link-btn" class="copy-link-btn" hidden>Copy permanent CDN link</button>
+          <button id="copy-version-json-btn" class="copy-link-btn" hidden>Copy version.json link</button>
+          <button id="delete-game-btn" class="danger ghost" hidden>Delete game</button>
+        </div>
       </header>
 
       <section id="empty-state" class="empty-state">
@@ -48,6 +54,7 @@
           <div class="upload-row">
             <button type="button" id="choose-files-btn" class="secondary">Choose files</button>
             <span id="chosen-files" class="muted"></span>
+            <span id="ready-tick" class="ready-tick" hidden>✓ Ready to upload</span>
           </div>
           <div class="upload-meta">
             <input id="version-id" type="text" placeholder="auto" />
@@ -55,18 +62,15 @@
               <option value="full">Full build</option>
               <option value="patch">Patch</option>
             </select>
-            <input id="based-on" type="text" placeholder="based on (patch only, optional)" />
+            <input id="executable-name" type="text" placeholder="executable name, e.g. Game.exe (optional)" />
           </div>
           <p id="version-hint" class="muted"></p>
           <textarea id="version-notes" placeholder="Release notes (optional)"></textarea>
           <button type="button" id="upload-btn" class="primary">Upload version</button>
+          <div id="upload-progress" class="progress-bar" hidden>
+            <div id="upload-progress-fill" class="progress-bar-fill"></div>
+          </div>
           <p id="upload-status" class="status"></p>
-        </div>
-
-        <div class="current-links">
-          <h2>Permanent CDN links</h2>
-          <p class="muted">These URLs never change — uploading a new version or patch updates the content in place.</p>
-          <div id="current-files-list"></div>
         </div>
 
         <div class="timeline-head">
@@ -80,6 +84,34 @@
   </div>
 
   <div id="toast" class="toast" hidden></div>
+
+  <div id="lock-screen" class="overlay" hidden>
+    <form id="lock-form" class="overlay-card">
+      <div class="overlay-brand">
+        <span class="brand-mark">▣</span>
+        <span class="brand-name">Tomoro</span>
+      </div>
+      <p class="muted">Enter the password to unlock build management.</p>
+      <input id="lock-password" type="password" placeholder="Password" autocomplete="current-password" />
+      <button type="submit" class="primary">Unlock</button>
+      <p id="lock-error" class="status error" hidden></p>
+    </form>
+  </div>
+
+  <div id="password-modal" class="overlay" hidden>
+    <form id="password-modal-form" class="overlay-card">
+      <div class="overlay-brand">
+        <span class="brand-mark">▣</span>
+        <span id="password-modal-title">Confirm action</span>
+      </div>
+      <p id="password-modal-desc" class="muted">Enter the password to confirm.</p>
+      <input id="password-modal-input" type="password" placeholder="Password" autocomplete="current-password" />
+      <div class="overlay-actions">
+        <button type="button" id="password-modal-cancel" class="secondary">Cancel</button>
+        <button type="submit" class="primary">Confirm</button>
+      </div>
+    </form>
+  </div>
 
   <script src="app.js"></script>
 </body>

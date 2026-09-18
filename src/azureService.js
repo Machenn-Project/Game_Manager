@@ -52,6 +52,12 @@ function currentPath(game, filename) {
   return `${game}/current/${filename}`;
 }
 
+// A stable, permanent manifest for launchers/auto-updaters to poll: always the
+// current version's info, at a URL that never changes.
+function versionJsonPath(game) {
+  return `${game}/version.json`;
+}
+
 // Builds a public, shareable link for a blob. If CDN_HOSTNAME is configured,
 // the link points at the CDN (stable/permanent even if storage internals change).
 // Otherwise it falls back to the direct blob storage URL.
@@ -198,6 +204,44 @@ function getCurrentFiles(game, manifest) {
   }));
 }
 
+// The current version's info, as written to version.json: whichever of the current
+// full build or its patches was uploaded most recently wins for description/exe name.
+function buildVersionInfo(game, manifest) {
+  const current = manifest.currentVersion;
+  if (!current) return null;
+  const fullVersion = manifest.versions.find((v) => v.id === current && v.type === "full");
+  const patches = manifest.versions
+    .filter((v) => v.type === "patch" && v.basedOn === current)
+    .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+  const latest = patches.length ? patches[patches.length - 1] : fullVersion;
+  if (!latest) return null;
+
+  const executableName = latest.executableName || (fullVersion && fullVersion.executableName) || null;
+  const currentFiles = getCurrentFiles(game, manifest);
+  const exeFile = executableName ? currentFiles.find((f) => f.filename === executableName) : null;
+  const primary = exeFile || currentFiles[0] || null;
+
+  return {
+    version: current,
+    url: primary ? primary.url : null,
+    gameName: game,
+    description: latest.notes || (fullVersion && fullVersion.notes) || "",
+    executableName,
+    timestamp: latest.createdAt,
+  };
+}
+
+// Rewrites the permanent {game}/version.json blob to match the current version.
+async function rebuildVersionJson(game, manifest) {
+  const info = buildVersionInfo(game, manifest);
+  if (!info) {
+    const container = getContainerClient();
+    await container.getBlockBlobClient(versionJsonPath(game)).deleteIfExists();
+    return;
+  }
+  await writeJsonBlob(versionJsonPath(game), info);
+}
+
 // Re-copies the current build's files into the stable {game}/current/ path so every
 // permanent link keeps pointing at the right bytes after any upload/delete.
 async function rebuildCurrentMirror(game, manifest) {
@@ -248,7 +292,12 @@ function withCurrentFiles(game, manifest) {
     ...v,
     files: (v.files || []).map((f) => ({ ...f, url: buildPublicUrl(filePath(game, v.id, f.filename)) })),
   }));
-  return { ...manifest, versions, currentFiles: getCurrentFiles(game, manifest) };
+  return {
+    ...manifest,
+    versions,
+    currentFiles: getCurrentFiles(game, manifest),
+    versionJsonUrl: buildPublicUrl(versionJsonPath(game)),
+  };
 }
 
 async function createGame(game) {
@@ -306,12 +355,16 @@ async function uploadVersion(game, versionId, files, meta = {}) {
   }
 
   const existingIdx = manifest.versions.findIndex((v) => v.id === finalVersionId);
+  const previousEntry = existingIdx >= 0 ? manifest.versions[existingIdx] : null;
   const versionEntry = {
     id: finalVersionId,
     label: meta.label || finalVersionId,
     type,
     basedOn: type === "patch" ? basedOn : null,
     notes: meta.notes || "",
+    // Keep re-uploading files to the same version id from wiping out an
+    // executable name entered on an earlier upload to that same version.
+    executableName: meta.executableName || (previousEntry && previousEntry.executableName) || null,
     createdAt: new Date().toISOString(),
     files: uploaded,
   };
@@ -335,6 +388,7 @@ async function uploadVersion(game, versionId, files, meta = {}) {
 
   manifest.latest = finalVersionId;
   await rebuildCurrentMirror(game, manifest);
+  await rebuildVersionJson(game, manifest);
   await writeJsonBlob(manifestPath(game), manifest);
   return withCurrentFiles(game, manifest);
 }
@@ -352,6 +406,7 @@ async function deleteVersion(game, versionId) {
     manifest.latest = manifest.versions.length ? manifest.versions[manifest.versions.length - 1].id : null;
   }
   await rebuildCurrentMirror(game, manifest);
+  await rebuildVersionJson(game, manifest);
   await writeJsonBlob(manifestPath(game), manifest);
   return withCurrentFiles(game, manifest);
 }
@@ -365,6 +420,7 @@ async function deleteFile(game, versionId, filename) {
     version.files = (version.files || []).filter((f) => f.filename !== filename);
   }
   await rebuildCurrentMirror(game, manifest);
+  await rebuildVersionJson(game, manifest);
   await writeJsonBlob(manifestPath(game), manifest);
   return withCurrentFiles(game, manifest);
 }

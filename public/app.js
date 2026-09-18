@@ -3,15 +3,154 @@ const state = {
   activeGame: null,
   chosenFiles: [],
   versionIdTouched: false,
+  authRequired: false,
 };
 
 const el = (id) => document.getElementById(id);
 
+const AUTH_TOKEN_KEY = "buildbay_token";
+const getToken = () => sessionStorage.getItem(AUTH_TOKEN_KEY);
+const setToken = (token) => {
+  if (token) sessionStorage.setItem(AUTH_TOKEN_KEY, token);
+  else sessionStorage.removeItem(AUTH_TOKEN_KEY);
+};
+
 async function api(path, options = {}) {
-  const res = await fetch(path, options);
+  const headers = { ...(options.headers || {}) };
+  const token = getToken();
+  if (token) headers["X-App-Token"] = token;
+  const res = await fetch(path, { ...options, headers });
+  if (res.status === 401) {
+    setToken(null);
+    showLockScreen("Session expired. Please enter the password again.");
+    throw new Error("Locked out — please unlock again.");
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
   return data;
+}
+
+// fetch() doesn't expose upload progress, so file uploads go through XHR instead
+// so the progress bar can track bytes actually sent, not just "done or not".
+function apiUpload(path, formData, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", path);
+    const token = getToken();
+    if (token) xhr.setRequestHeader("X-App-Token", token);
+
+    xhr.upload.addEventListener("progress", (e) => {
+      if (onProgress && e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
+    });
+
+    xhr.onload = () => {
+      let data = {};
+      try {
+        data = JSON.parse(xhr.responseText);
+      } catch {
+        // non-JSON response body; data stays {}
+      }
+      if (xhr.status === 401) {
+        setToken(null);
+        showLockScreen("Session expired. Please enter the password again.");
+        reject(new Error("Locked out — please unlock again."));
+        return;
+      }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(data);
+      } else {
+        reject(new Error(data.error || `Request failed (${xhr.status})`));
+      }
+    };
+    xhr.onerror = () => reject(new Error("Network error during upload."));
+    xhr.send(formData);
+  });
+}
+
+// --- Password gate ---
+
+function showLockScreen(message) {
+  el("lock-screen").hidden = false;
+  el("lock-btn").hidden = true;
+  const err = el("lock-error");
+  if (message) {
+    err.textContent = message;
+    err.hidden = false;
+  } else {
+    err.hidden = true;
+    err.textContent = "";
+  }
+  el("lock-password").value = "";
+  el("lock-password").focus();
+}
+
+function hideLockScreen() {
+  el("lock-screen").hidden = true;
+  el("lock-btn").hidden = !state.authRequired;
+}
+
+// Asks for the password again to confirm one specific action (create/upload/delete),
+// independent of whether the app session is already unlocked. Resolves with the
+// entered password, or null if the user cancels.
+function requestPassword(title, desc) {
+  return new Promise((resolve) => {
+    const modal = el("password-modal");
+    const form = el("password-modal-form");
+    const input = el("password-modal-input");
+    const cancelBtn = el("password-modal-cancel");
+
+    el("password-modal-title").textContent = title;
+    el("password-modal-desc").textContent = desc;
+    input.value = "";
+    modal.hidden = false;
+    input.focus();
+
+    function cleanup() {
+      modal.hidden = true;
+      form.removeEventListener("submit", onSubmit);
+      cancelBtn.removeEventListener("click", onCancel);
+    }
+    function onSubmit(e) {
+      e.preventDefault();
+      const value = input.value;
+      cleanup();
+      resolve(value);
+    }
+    function onCancel() {
+      cleanup();
+      resolve(null);
+    }
+
+    form.addEventListener("submit", onSubmit);
+    cancelBtn.addEventListener("click", onCancel);
+  });
+}
+
+async function boot() {
+  let status = { required: false };
+  try {
+    status = await (await fetch("/api/auth-status")).json();
+  } catch {
+    // If the check itself fails, fall back to no gate rather than locking the user out silently.
+  }
+  state.authRequired = !!status.required;
+
+  if (!state.authRequired) {
+    hideLockScreen();
+    await loadGames().catch((err) => showToast(err.message));
+    return;
+  }
+  if (!getToken()) {
+    showLockScreen();
+    return;
+  }
+  try {
+    await loadGames();
+    hideLockScreen();
+  } catch {
+    // api() already shows the lock screen on a 401; anything else, show it too — we can't proceed.
+    showLockScreen();
+  }
 }
 
 function showToast(msg) {
@@ -84,9 +223,6 @@ async function refreshVersionSuggestion() {
     if (!state.versionIdTouched) {
       el("version-id").value = suggestion.versionId || "";
     }
-    if (type === "patch" && !el("based-on").value.trim()) {
-      el("based-on").value = suggestion.basedOn || "";
-    }
     if (suggestion.versionId) {
       hint.textContent =
         type === "patch"
@@ -107,16 +243,29 @@ function renderGamePanel() {
   el("empty-state").hidden = !!game;
   el("game-panel").hidden = !game;
   el("delete-game-btn").hidden = !game;
+  const copyCurrentBtn = el("copy-current-link-btn");
+  const copyVersionJsonBtn = el("copy-version-json-btn");
   if (!game) {
     el("game-title").textContent = "Select a game";
     el("game-sub").textContent = "Its builds, patches and CDN links live here.";
+    copyCurrentBtn.hidden = true;
+    copyCurrentBtn.onclick = null;
+    copyVersionJsonBtn.hidden = true;
+    copyVersionJsonBtn.onclick = null;
     return;
   }
 
   el("game-title").textContent = game.name;
   el("game-sub").textContent = `${game.versions.length} version${game.versions.length === 1 ? "" : "s"} stored`;
 
-  renderCurrentFiles(game);
+  const primaryFile = (game.currentFiles || [])[0];
+  copyCurrentBtn.hidden = !primaryFile;
+  copyCurrentBtn.onclick = primaryFile ? () => copyLink(primaryFile.url, copyCurrentBtn) : null;
+
+  copyVersionJsonBtn.hidden = !(game.currentVersion && game.versionJsonUrl);
+  copyVersionJsonBtn.onclick = game.currentVersion && game.versionJsonUrl
+    ? () => copyLink(game.versionJsonUrl, copyVersionJsonBtn)
+    : null;
 
   const latestBadge = el("latest-badge");
   if (game.currentVersion || game.latest) {
@@ -180,52 +329,57 @@ function renderGamePanel() {
   }
 }
 
-function renderCurrentFiles(game) {
-  const list = el("current-files-list");
-  const files = game.currentFiles || [];
-  if (files.length === 0) {
-    list.innerHTML = `<p class="muted">No current build yet — upload a full version to get permanent links.</p>`;
-    return;
-  }
-  list.innerHTML = files
-    .map(
-      (f) => `
-      <div class="file-row" data-file="${f.filename}">
-        <span class="file-name" title="${f.filename}">${f.filename}</span>
-        <span class="file-size">${fmtSize(f.size)}</span>
-        <button class="icon-btn copy-btn" data-url="${f.url}">Copy CDN link</button>
-      </div>`
-    )
-    .join("");
-  list.querySelectorAll(".copy-btn").forEach((btn) => btn.addEventListener("click", () => copyLink(btn.dataset.url)));
-}
-
-async function copyLink(url) {
+async function copyLink(url, btn) {
   try {
     await navigator.clipboard.writeText(url);
     showToast("CDN link copied");
   } catch {
     showToast(url);
   }
+  if (btn) {
+    const original = btn.textContent;
+    btn.textContent = "Copied!";
+    btn.classList.add("copied");
+    clearTimeout(btn._resetT);
+    btn._resetT = setTimeout(() => {
+      btn.textContent = original;
+      btn.classList.remove("copied");
+    }, 1500);
+  }
 }
 
 // --- Mutations ---
 
 async function addGame(name) {
+  let password = null;
+  if (state.authRequired) {
+    password = await requestPassword("Confirm: create game", `Enter the password to create "${name}".`);
+    if (password === null) return false;
+  }
   await api("/api/games", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, password }),
   });
   await loadGames();
   selectGame(name);
+  return true;
 }
 
 async function deleteActiveGame() {
   const game = state.activeGame;
   if (!game) return;
   if (!confirm(`Delete "${game.name}" and every version/file inside it? This cannot be undone.`)) return;
-  await api(`/api/games/${encodeURIComponent(game.name)}`, { method: "DELETE" });
+  let password = null;
+  if (state.authRequired) {
+    password = await requestPassword("Confirm: delete game", `Enter the password to delete "${game.name}".`);
+    if (password === null) return;
+  }
+  await api(`/api/games/${encodeURIComponent(game.name)}`, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password }),
+  });
   state.activeGame = null;
   await loadGames();
   renderGamePanel();
@@ -233,15 +387,33 @@ async function deleteActiveGame() {
 
 async function deleteVersion(game, versionId) {
   if (!confirm(`Delete version "${versionId}"? This removes its files from storage and the CDN.`)) return;
-  await api(`/api/games/${encodeURIComponent(game)}/versions/${encodeURIComponent(versionId)}`, { method: "DELETE" });
+  let password = null;
+  if (state.authRequired) {
+    password = await requestPassword("Confirm: delete version", `Enter the password to delete version "${versionId}".`);
+    if (password === null) return;
+  }
+  await api(`/api/games/${encodeURIComponent(game)}/versions/${encodeURIComponent(versionId)}`, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password }),
+  });
   await loadGames();
 }
 
 async function deleteFile(game, versionId, filename) {
   if (!confirm(`Delete file "${filename}"?`)) return;
+  let password = null;
+  if (state.authRequired) {
+    password = await requestPassword("Confirm: delete file", `Enter the password to delete "${filename}".`);
+    if (password === null) return;
+  }
   await api(
     `/api/games/${encodeURIComponent(game)}/versions/${encodeURIComponent(versionId)}/files/${encodeURIComponent(filename)}`,
-    { method: "DELETE" }
+    {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }),
+    }
   );
   await loadGames();
 }
@@ -255,8 +427,8 @@ async function uploadVersion() {
   if (!game) return;
   const versionId = el("version-id").value.trim();
   const type = el("version-type").value;
-  const basedOn = el("based-on").value.trim();
   const notes = el("version-notes").value.trim();
+  const executableName = el("executable-name").value.trim();
 
   if (state.chosenFiles.length === 0) {
     statusEl.className = "status error";
@@ -264,26 +436,41 @@ async function uploadVersion() {
     return;
   }
 
+  let password = "";
+  if (state.authRequired) {
+    const entered = await requestPassword("Confirm: upload version", "Enter the password to upload this build.");
+    if (entered === null) return;
+    password = entered;
+  }
+
   const form = new FormData();
   form.append("versionId", versionId);
   form.append("label", versionId);
   form.append("type", type);
-  form.append("basedOn", basedOn);
   form.append("notes", notes);
+  form.append("executableName", executableName);
+  form.append("password", password);
   for (const file of state.chosenFiles) form.append("files", file);
 
   const btn = el("upload-btn");
+  const progressBar = el("upload-progress");
+  const progressFill = el("upload-progress-fill");
   btn.disabled = true;
-  statusEl.textContent = "Uploading...";
+  progressBar.hidden = false;
+  progressFill.style.width = "0%";
+  statusEl.textContent = "Uploading... 0%";
   try {
-    await api(`/api/games/${encodeURIComponent(game.name)}/versions`, { method: "POST", body: form });
+    await apiUpload(`/api/games/${encodeURIComponent(game.name)}/versions`, form, (pct) => {
+      progressFill.style.width = `${pct}%`;
+      statusEl.textContent = `Uploading... ${pct}%`;
+    });
     statusEl.className = "status ok";
     statusEl.textContent = "Uploaded. CDN links are ready below.";
     state.chosenFiles = [];
     state.versionIdTouched = false;
     el("chosen-files").textContent = "";
+    el("ready-tick").hidden = true;
     el("version-id").value = "";
-    el("based-on").value = "";
     el("version-notes").value = "";
     await loadGames();
     await refreshVersionSuggestion();
@@ -292,6 +479,7 @@ async function uploadVersion() {
     statusEl.textContent = err.message;
   } finally {
     btn.disabled = false;
+    progressBar.hidden = true;
   }
 }
 
@@ -303,8 +491,8 @@ el("new-game-form").addEventListener("submit", async (e) => {
   const name = input.value.trim();
   if (!name) return;
   try {
-    await addGame(name);
-    input.value = "";
+    const created = await addGame(name);
+    if (created) input.value = "";
   } catch (err) {
     alert(err.message);
   }
@@ -313,20 +501,52 @@ el("new-game-form").addEventListener("submit", async (e) => {
 el("delete-game-btn").addEventListener("click", deleteActiveGame);
 el("upload-btn").addEventListener("click", uploadVersion);
 
+el("lock-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const password = el("lock-password").value;
+  const errEl = el("lock-error");
+  errEl.hidden = true;
+  try {
+    const res = await fetch("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || "Incorrect password.");
+    setToken(data.token || null);
+    hideLockScreen();
+    await loadGames().catch((err) => showToast(err.message));
+  } catch (err) {
+    errEl.textContent = err.message;
+    errEl.hidden = false;
+    el("lock-password").value = "";
+    el("lock-password").focus();
+  }
+});
+
+el("lock-btn").addEventListener("click", () => {
+  setToken(null);
+  state.activeGame = null;
+  showLockScreen();
+});
+
 el("version-type").addEventListener("change", () => {
   state.versionIdTouched = false;
-  el("based-on").value = "";
   refreshVersionSuggestion();
 });
 el("version-id").addEventListener("input", () => {
   state.versionIdTouched = el("version-id").value.trim().length > 0;
 });
 
-el("choose-files-btn").addEventListener("click", () => el("file-input").click());
-el("file-input").addEventListener("change", (e) => {
-  state.chosenFiles = Array.from(e.target.files);
+function setChosenFiles(files) {
+  state.chosenFiles = Array.from(files);
   el("chosen-files").textContent = state.chosenFiles.map((f) => f.name).join(", ");
-});
+  el("ready-tick").hidden = state.chosenFiles.length === 0;
+}
+
+el("choose-files-btn").addEventListener("click", () => el("file-input").click());
+el("file-input").addEventListener("change", (e) => setChosenFiles(e.target.files));
 
 const dropZone = el("drop-zone");
 ["dragover", "dragenter"].forEach((evt) =>
@@ -341,9 +561,6 @@ const dropZone = el("drop-zone");
     dropZone.classList.remove("dragover");
   })
 );
-dropZone.addEventListener("drop", (e) => {
-  state.chosenFiles = Array.from(e.dataTransfer.files);
-  el("chosen-files").textContent = state.chosenFiles.map((f) => f.name).join(", ");
-});
+dropZone.addEventListener("drop", (e) => setChosenFiles(e.dataTransfer.files));
 
-loadGames().catch((err) => showToast(err.message));
+boot();

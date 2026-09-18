@@ -1,13 +1,14 @@
 :root {
-  --bg: #14161a;
-  --panel: #1b1e24;
-  --panel-raised: #21252c;
-  --border: #2b2f37;
-  --text: #e7e5e0;
-  --muted: #8b8f98;
-  --accent: #4fd1c5;
-  --accent-dim: #2c6e68;
-  --patch: #f0a860;
+  --bg: #0a0a0a;
+  --panel: #141414;
+  --panel-raised: #1e1e1e;
+  --border: #303030;
+  --text: #f5f5f5;
+  --muted: #8f8f8f;
+  --accent: #ffffff;
+  --accent-dim: #3a3a3a;
+  --on-accent: #0a0a0a;
+  --patch: #cfcfcf;
   --danger: #e0665f;
   --mono: "IBM Plex Mono", ui-monospace, monospace;
   --sans: "IBM Plex Sans", -apple-system, sans-serif;
@@ -78,7 +79,7 @@ body {
   cursor: pointer;
 }
 
-.new-game button:hover { background: var(--accent); color: #0d1210; }
+.new-game button:hover { background: var(--accent); color: var(--on-accent); }
 
 .game-list {
   display: flex;
@@ -107,11 +108,17 @@ body {
   color: var(--muted);
 }
 
+.sidebar-footer-btn {
+  margin-top: auto;
+}
+
 /* --- Main --- */
 
 .main {
   padding: 32px 40px;
-  max-width: 880px;
+  max-width: 960px;
+  margin: 0 auto;
+  width: 100%;
 }
 
 .main-header {
@@ -119,6 +126,14 @@ body {
   align-items: flex-start;
   justify-content: space-between;
   margin-bottom: 24px;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .main-header h1 {
@@ -169,6 +184,12 @@ button.ghost.danger:hover { border-color: var(--danger); color: var(--danger); }
   margin-bottom: 14px;
 }
 
+.ready-tick {
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 13px;
+}
+
 button.secondary {
   background: var(--panel-raised);
   border: 1px solid var(--border);
@@ -183,7 +204,7 @@ button.secondary:hover { border-color: var(--accent); }
 
 .upload-meta {
   display: grid;
-  grid-template-columns: 1.2fr 1fr 1.2fr;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 8px;
   margin-bottom: 10px;
 }
@@ -209,7 +230,7 @@ button.secondary:hover { border-color: var(--accent); }
 
 button.primary {
   background: var(--accent);
-  color: #0d1210;
+  color: var(--on-accent);
   border: none;
   padding: 10px 16px;
   border-radius: 6px;
@@ -225,20 +246,38 @@ button.primary:disabled { opacity: .5; cursor: default; }
 .status.error { color: var(--danger); }
 .status.ok { color: var(--accent); }
 
-/* --- Permanent CDN links --- */
-
-.current-links {
-  background: var(--panel);
-  border: 1px solid var(--accent-dim);
-  border-radius: 10px;
-  padding: 16px 18px;
-  margin-bottom: 28px;
+.progress-bar {
+  height: 6px;
+  background: var(--panel-raised);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+  margin-top: 10px;
 }
 
-.current-links h2 { font-size: 15px; margin: 0 0 4px; }
-.current-links .muted { margin-bottom: 10px; }
+.progress-bar-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  transition: width 0.15s ease;
+}
 
-#current-files-list .file-row:first-of-type { border-top: none; }
+/* --- Permanent CDN link (header) --- */
+
+.copy-link-btn {
+  background: var(--accent);
+  color: var(--on-accent);
+  border: none;
+  padding: 9px 18px;
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.copy-link-btn:hover { filter: brightness(1.08); }
+.copy-link-btn.copied { background: var(--accent-dim); color: var(--text); }
 
 /* --- Timeline --- */
 
@@ -322,8 +361,8 @@ button.primary:disabled { opacity: .5; cursor: default; }
   text-transform: lowercase;
 }
 
-.tag.full { background: var(--accent-dim); color: var(--text); }
-.tag.patch { background: #4a3620; color: var(--patch); }
+.tag.full { background: var(--accent-dim); color: var(--text); border: 1px solid transparent; }
+.tag.patch { background: transparent; color: var(--patch); border: 1px solid var(--border); }
 
 .version-date { font-size: 12px; color: var(--muted); margin-left: auto; }
 
@@ -374,6 +413,64 @@ button.primary:disabled { opacity: .5; cursor: default; }
   padding: 10px 16px;
   border-radius: 8px;
   font-size: 13px;
+}
+
+/* --- Overlays (lock screen + password confirm modal) --- */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 11, 13, 0.88);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  z-index: 1000;
+}
+
+/* An explicit `display` on .overlay otherwise beats the browser's built-in
+   [hidden] rule (author styles always win over user-agent ones), so the
+   overlay would stay visible forever even after JS sets hidden = true. */
+.overlay[hidden] {
+  display: none;
+}
+
+.overlay-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 28px;
+  width: 320px;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.overlay-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 16px;
+  margin-bottom: 2px;
+}
+
+.overlay-card input {
+  background: var(--panel-raised);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 14px;
+  width: 100%;
+}
+
+.overlay-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
 }
 
 @media (max-width: 760px) {
